@@ -28,6 +28,7 @@ public sealed class DirtiableManager : IDisposable
         transactionStack.TransactionCompleted += TransactionCompleted;
         transactionStack.TransactionRollbacked += TransactionStatusChanged;
         transactionStack.TransactionRollforwarded += TransactionStatusChanged;
+        transactionStack.TransactionAborted += TransactionStatusChanged;
         transactionStack.TransactionDiscarded += TransactionDiscarded;
         transactionStack.Cleared += StackCleared;
     }
@@ -39,6 +40,7 @@ public sealed class DirtiableManager : IDisposable
         transactionStack.TransactionCompleted -= TransactionCompleted;
         transactionStack.TransactionRollbacked -= TransactionStatusChanged;
         transactionStack.TransactionRollforwarded -= TransactionStatusChanged;
+        transactionStack.TransactionAborted -= TransactionStatusChanged;
         transactionStack.TransactionDiscarded -= TransactionDiscarded;
         transactionStack.Cleared -= StackCleared;
         transactionStack = null!;

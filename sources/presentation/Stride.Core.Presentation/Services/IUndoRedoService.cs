@@ -34,6 +34,14 @@ public interface IUndoRedoService
     /// Gets whether there is currently an undo/redo operation in progress.
     /// </summary>
     bool UndoRedoInProgress { get; }
+    /// <summary>Rollback failed; mutations/save must stop until the owner reloads the session.</summary>
+    bool HasFailedTransaction { get; }
+
+    /// <summary>Roll back an owned current transaction without committing it or purging previous redo history.</summary>
+    void AbortTransaction(ITransaction transaction);
+
+    /// <summary>Raised for an aborted transaction; it is never added to undo history.</summary>
+    event EventHandler<TransactionEventArgs> Aborted;
 
     /// <summary>
     /// Gets a task that completes when the current transaction is over, or immediately if there is no transaction currently in progress.

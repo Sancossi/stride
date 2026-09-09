@@ -18,6 +18,10 @@ public interface ITransaction : IDisposable
     /// Gets whether this transaction is empty.
     /// </summary>
     bool IsEmpty { get; }
+    /// <summary>Whether rollback completed without adding this transaction to history.</summary>
+    bool IsAborted { get; }
+    /// <summary>Whether rollback failed and the current state must not be committed.</summary>
+    bool HasFailedAbort { get; }
 
     /// <summary>
     /// Continues the transaction when the current <see cref="SynchronizationContext"/> has changed, allowing to push additional operations or complete it.

@@ -18,6 +18,8 @@ internal class DummyTransaction : ITransaction, IReadOnlyTransaction
     public IReadOnlyList<Operation> Operations { get; } = [];
 
     public bool IsEmpty => true;
+    public bool IsAborted => false;
+    public bool HasFailedAbort => false;
 
     public TransactionFlags Flags => TransactionFlags.None;
 

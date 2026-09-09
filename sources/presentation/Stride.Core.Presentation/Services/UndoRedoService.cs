@@ -30,6 +30,7 @@ public class UndoRedoService : IUndoRedoService
     public bool TransactionInProgress => stack.TransactionInProgress;
 
     public bool UndoRedoInProgress { get; private set; }
+    public bool HasFailedTransaction { get; private set; }
 
     public Task UndoRedoCompletion => undoRedoCompletion?.Task ?? Task.CompletedTask;
 
@@ -45,14 +46,37 @@ public class UndoRedoService : IUndoRedoService
 
     public event EventHandler<EventArgs> Cleared { add { stack.Cleared += value; } remove { stack.Cleared -= value; } }
 
+    public event EventHandler<TransactionEventArgs> Aborted { add { stack.TransactionAborted += value; } remove { stack.TransactionAborted -= value; } }
+
+    public void AbortTransaction(ITransaction transaction)
+    {
+        if (UndoRedoInProgress) throw new TransactionException("Another undo/redo operation is running.");
+        UndoRedoInProgress = true;
+        undoRedoCompletion = new TaskCompletionSource<int>();
+        try { stack.AbortTransaction(transaction); }
+        catch { if (transaction.HasFailedAbort) HasFailedTransaction = true; throw; }
+        finally
+        {
+            if (!stack.TransactionInProgress)
+            {
+                transactionCompletion?.TrySetResult(0);
+                transactionCompletion = null;
+            }
+            undoRedoCompletion.TrySetResult(0);
+            undoRedoCompletion = null;
+            UndoRedoInProgress = false;
+        }
+    }
+
     public ITransaction CreateTransaction(TransactionFlags flags = TransactionFlags.None)
     {
+        if (HasFailedTransaction) throw new TransactionException("Rollback failed; reload the session before editing.");
         if (UndoRedoInProgress)
         {
             return new DummyTransaction();
         }
 
-        transactionCompletion = new TaskCompletionSource<int>();
+        transactionCompletion ??= new TaskCompletionSource<int>();
         return stack.CreateTransaction(flags);
     }
 

@@ -322,27 +322,110 @@ namespace Stride.Core.Assets.Editor.ViewModel
             return CreateAsset(directory, assetItem, canUndoRedoCreation, loggerResult, false);
         }
 
+        /// <summary>Insert prepared assets in an owned root transaction. Failed insertions never enter undo/redo history.</summary>
+        public IReadOnlyList<AssetViewModel> CreateAssetsAtomic(DirectoryBaseViewModel directory, IReadOnlyList<AssetItem> items, LoggerResult loggerResult)
+        {
+            Dispatcher.EnsureAccess();
+            if (UndoRedoService.TransactionInProgress || UndoRedoService.UndoRedoInProgress || UndoRedoService.HasFailedTransaction)
+                throw new InvalidOperationException("Atomic creation requires an idle transaction service.");
+            if (directory == null || directory.Package != this || items == null || items.Count == 0 || items.Count > 128)
+                throw new ArgumentException("A local directory and 1..128 prepared assets are required.");
+            if (items.Any(x => x == null || x.Id == AssetId.Empty || Session.GetAssetById(x.Id) != null || Session.GraphContainer.TryGetGraph(x.Id) != null) ||
+                items.Select(x => x.Id).Distinct().Count() != items.Count ||
+                items.Select(x => Path.GetFileName(x.Location)).Distinct(StringComparer.OrdinalIgnoreCase).Count() != items.Count ||
+                items.Any(x => directory.Assets.Any(a => string.Equals(a.Name, Path.GetFileName(x.Location), StringComparison.OrdinalIgnoreCase))))
+                throw new InvalidOperationException("Prepared asset IDs/names collide with the session or batch.");
+            var created = new List<AssetViewModel>();
+            var transaction = UndoRedoService.CreateTransaction();
+            try
+            {
+                foreach (var item in items)
+                {
+                    created.Add(CreateAsset(directory, item, true, loggerResult));
+                    if (loggerResult.HasErrors) throw new InvalidOperationException("Native asset creation reported errors.");
+                }
+                UndoRedoService.SetName(transaction, $"Create {created.Count} prepared assets");
+                transaction.Complete();
+                return created;
+            }
+            catch (Exception failure)
+            {
+                Exception abortError = null;
+                try { UndoRedoService.AbortTransaction(transaction); }
+                catch (Exception error) { abortError = error; }
+                if (!transaction.IsAborted)
+                    throw new AggregateException("Asset creation rollback failed; session state is uncertain.", failure, abortError ?? failure);
+                foreach (var asset in created)
+                    CleanupFailedCreation(directory, asset.AssetItem, asset, asset.PropertyGraph);
+                if (abortError != null) throw new AggregateException("Asset creation was rolled back, but abort notification failed.", failure, abortError);
+                throw;
+            }
+        }
+
         private AssetViewModel CreateAsset(DirectoryBaseViewModel directory, AssetItem assetItem, bool canUndoRedoCreation, LoggerResult loggerResult, bool isLoading)
         {
             if (directory == null)
                 throw new ArgumentNullException(nameof(directory));
             if (assetItem == null)
                 throw new ArgumentNullException(nameof(assetItem));
+            if (Session.GetAssetById(assetItem.Id) != null || Session.GraphContainer.TryGetGraph(assetItem.Id) != null)
+                throw new InvalidOperationException("Asset identity is already registered.");
+            var creation = canUndoRedoCreation ? UndoRedoService.CreateTransaction() : null;
+            AssetViewModel asset = null;
+            try
+            {
+                AssetCollectionItemIdHelper.GenerateMissingItemIds(assetItem.Asset);
+                var parameters = new AssetViewModelConstructionParameters(ServiceProvider, directory, Package, assetItem, directory.Session.AssetNodeContainer, canUndoRedoCreation);
+                Session.GraphContainer.InitializeAsset(assetItem, loggerResult);
+                var assetViewModelType = Session.GetAssetViewModelType(assetItem);
+                if (assetViewModelType.IsGenericType)
+                {
+                    assetViewModelType = assetViewModelType.MakeGenericType(assetItem.Asset.GetType());
+                }
+                asset = (AssetViewModel)Activator.CreateInstance(assetViewModelType, parameters);
+                if (!isLoading)
+                {
+                    asset.Initialize();
+                }
+                creation?.Complete();
+                return asset;
+            }
+            catch (Exception failure)
+            {
+                var partial = asset ?? Session.GetAssetById(assetItem.Id) ?? directory.Assets.FirstOrDefault(x => x.Id == assetItem.Id);
+                var graph = Session.GraphContainer.TryGetGraph(assetItem.Id);
+                Exception abortError = null;
+                if (creation != null)
+                {
+                    try { UndoRedoService.AbortTransaction(creation); }
+                    catch (Exception error) { abortError = error; }
+                    if (!creation.IsAborted)
+                        throw new AggregateException("Asset constructor rollback failed; session state is uncertain.", failure, abortError ?? failure);
+                }
+                CleanupFailedCreation(directory, assetItem, partial, graph);
+                if (abortError != null) throw new AggregateException("Asset constructor rolled back, but notification failed.", failure, abortError);
+                throw;
+            }
+        }
 
-            AssetCollectionItemIdHelper.GenerateMissingItemIds(assetItem.Asset);
-            var parameters = new AssetViewModelConstructionParameters(ServiceProvider, directory, Package, assetItem, directory.Session.AssetNodeContainer, canUndoRedoCreation);
-            Session.GraphContainer.InitializeAsset(assetItem, loggerResult);
-            var assetViewModelType = Session.GetAssetViewModelType(assetItem);
-            if (assetViewModelType.IsGenericType)
+        // Only called for this method's newly created IDs after their transaction
+        // was aborted. No public arbitrary-release API and no asset file deletion.
+        private void CleanupFailedCreation(DirectoryBaseViewModel directory, AssetItem item, AssetViewModel partial, Stride.Core.Assets.Quantum.AssetPropertyGraph graph)
+        {
+            if (partial != null)
             {
-                assetViewModelType = assetViewModelType.MakeGenericType(assetItem.Asset.GetType());
+                if (!partial.IsDeleted) partial.MarkAsDeleted();
+                directory.RemoveFailedCreation(partial);
+                DeletedAssetsList.Remove(partial);
+                if (Session.GetAssetById(item.Id) == partial) Session.UnregisterAsset(partial);
+                if (partial.PropertyGraph != null && partial.PropertyGraph != graph) partial.PropertyGraph.Dispose();
             }
-            var asset = (AssetViewModel)Activator.CreateInstance(assetViewModelType, parameters);
-            if (!isLoading)
-            {
-                asset.Initialize();
-            }
-            return asset;
+            var registered = Session.GraphContainer.TryGetGraph(item.Id);
+            if (registered != null && registered != graph) registered.Dispose();
+            Session.GraphContainer.UnregisterGraph(item.Id);
+            graph?.Dispose();
+            var remaining = Package.Assets.FirstOrDefault(x => x.Id == item.Id);
+            if (remaining != null) Package.Assets.Remove(remaining);
         }
 
         public bool Match(Package package)

@@ -14,6 +14,13 @@ internal sealed class Transaction : Operation, ITransaction, IReadOnlyTransactio
     private readonly TransactionStack transactionStack;
     private SynchronizationContext? synchronizationContext;
     private int referenceCount = 1;
+    private bool aborted;
+    private bool abortFailed;
+    public bool IsAborted => aborted;
+    public bool HasFailedAbort => abortFailed;
+    internal bool CanAbort => !aborted && !abortFailed && referenceCount == 1 && Flags == TransactionFlags.None;
+    internal void MarkAborted() { aborted = true; referenceCount = 0; synchronizationContext = null; }
+    internal void MarkAbortFailed() { abortFailed = true; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Transaction"/> class.
@@ -42,7 +49,7 @@ internal sealed class Transaction : Operation, ITransaction, IReadOnlyTransactio
     /// <seealso cref="Complete"/>
     public void Dispose()
     {
-        Complete();
+        if (!aborted) Complete();
     }
 
     /// <inheritdoc/>
@@ -54,12 +61,14 @@ internal sealed class Transaction : Operation, ITransaction, IReadOnlyTransactio
     /// <inheritdoc/>
     public void AddReference()
     {
+        if (aborted || abortFailed) throw new TransactionException("An aborted transaction cannot be shared.");
         referenceCount++;
     }
 
     /// <inheritdoc/>
     public void Complete()
     {
+        if (abortFailed) throw new TransactionException("Rollback failed; transaction state is uncertain and cannot be committed.");
         if (referenceCount == 0)
             throw new TransactionException("This transaction has already been completed.");
 

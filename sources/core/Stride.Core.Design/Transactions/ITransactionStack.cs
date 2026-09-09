@@ -76,6 +76,9 @@ public interface ITransactionStack
     /// </summary>
     event EventHandler<TransactionsDiscardedEventArgs> TransactionDiscarded;
 
+    /// <summary>Raised after an in-progress transaction was rolled back without entering history.</summary>
+    event EventHandler<TransactionEventArgs> TransactionAborted;
+
     /// <summary>
     /// Raised when the transaction stack has been cleared.
     /// </summary>
@@ -89,6 +92,9 @@ public interface ITransactionStack
     /// <param name="flags">The flags to set on the new transaction.</param>
     /// <returns>A transaction object that must be completed in order to add the transaction to the stack.</returns>
     ITransaction CreateTransaction(TransactionFlags flags = TransactionFlags.None);
+
+    /// <summary>Rolls back the current unshared, default-flags transaction without modifying previous undo/redo history.</summary>
+    void AbortTransaction(ITransaction transaction);
 
     /// <summary>
     /// Clears the transaction stack.

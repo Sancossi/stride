@@ -976,6 +976,11 @@ namespace Stride.Core.Assets.Editor.ViewModel
             Dispatcher.EnsureAccess();
             if (IsSessionDisposed || closeAccepted)
                 throw new InvalidOperationException("The session is closed or disposed.");
+            if (UndoRedoService.HasFailedTransaction)
+            {
+                AssetLog.GetLogger(LogKey.Get("Session")).Error("Cannot save: transaction rollback failed. Reload the session without saving its uncertain state.");
+                return false;
+            }
             if (IsAssetOperationInProgress)
             {
                 AssetLog.GetLogger(LogKey.Get("Session")).Warning("Cannot save while an asset source update is running. Wait for it to complete.");

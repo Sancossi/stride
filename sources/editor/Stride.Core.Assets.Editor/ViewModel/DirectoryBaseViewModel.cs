@@ -98,6 +98,12 @@ namespace Stride.Core.Assets.Editor.ViewModel
             assets.Remove(asset);
         }
 
+        internal void RemoveFailedCreation(AssetViewModel asset)
+        {
+            using (SuspendNotificationForCollectionChange(nameof(Assets)))
+                assets.Remove(asset);
+        }
+
         /// <summary>
         /// Adds itself and all its sub-directories recursively th the given collection.
         /// </summary>

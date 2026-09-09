@@ -65,6 +65,30 @@ internal class TransactionStack : ITransactionStack
     /// <inheritdoc/>
     public event EventHandler<TransactionsDiscardedEventArgs>? TransactionDiscarded;
 
+    public event EventHandler<TransactionEventArgs>? TransactionAborted;
+
+    public void AbortTransaction(ITransaction transaction)
+    {
+        lock (lockObject)
+        {
+            if (RollInProgress || transaction is not Transaction current || transactionsInProgress.Count == 0 ||
+                !ReferenceEquals(transactionsInProgress.Peek(), current) || !current.CanAbort)
+                throw new TransactionException("Abort requires this stack's current, unshared transaction with default flags.");
+            RollInProgress = true;
+            try
+            {
+                try { current.Interface.Rollback(); }
+                catch { current.MarkAbortFailed(); throw; }
+                transactionsInProgress.Pop();
+                TransactionInProgress = transactionsInProgress.Count > 0;
+                current.MarkAborted();
+                try { TransactionAborted?.Invoke(this, new TransactionEventArgs(current)); }
+                finally { current.Interface.Freeze(); }
+            }
+            finally { RollInProgress = false; }
+        }
+    }
+
     /// <inheritdoc/>
     public event EventHandler<EventArgs>? Cleared;
 
@@ -75,6 +99,8 @@ internal class TransactionStack : ITransactionStack
         {
             if (RollInProgress)
                 throw new TransactionException("Unable to create a transaction. A rollback or rollforward operation is in progress.");
+            if (transactionsInProgress.TryPeek(out var active) && active.HasFailedAbort)
+                throw new TransactionException("Rollback failed; reload the session before editing.");
 
             var transaction = new Transaction(this, flags);
             if ((flags & TransactionFlags.KeepParentsAlive) != 0)
@@ -94,6 +120,8 @@ internal class TransactionStack : ITransactionStack
     {
         lock (lockObject)
         {
+            if (RollInProgress || (transactionsInProgress.TryPeek(out var active) && active.HasFailedAbort))
+                throw new TransactionException("Cannot record operations during rollback or after failed rollback.");
             if (transactionsInProgress.Count == 0)
                 throw new TransactionException("There is no transaction in progress in the transaction stack.");
 
@@ -133,6 +161,8 @@ internal class TransactionStack : ITransactionStack
     {
         lock (lockObject)
         {
+            if (RollInProgress)
+                throw new TransactionException("Cannot complete a transaction during rollback.");
             try
             {
                 if (transactionsInProgress.Count == 0)
