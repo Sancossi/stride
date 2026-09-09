@@ -92,6 +92,15 @@ namespace Stride.Core.Assets.Editor.ViewModel
 
         private async Task UpdateAssetsFromSource(IEnumerable<AssetViewModel> assets)
         {
+            Dispatcher.EnsureAccess();
+            if (!sessionViewModel.TryBeginAssetOperation(out var lease))
+            {
+                sessionViewModel.AssetLog.GetLogger(Logs.LogKey.Get("Session")).Warning("Cannot update asset batch while the session is saving, closing, disposed or updating sources.");
+                return;
+            }
+            using (lease)
+            {
+            var selectedAssets = assets.ToArray();
             var logger = new LoggerResult();
             var workProgress = new WorkProgressViewModel(ServiceProvider, logger)
             {
@@ -106,21 +115,24 @@ namespace Stride.Core.Assets.Editor.ViewModel
             var undoRedo = ServiceProvider.Get<IUndoRedoService>();
             using (var transaction = undoRedo.CreateTransaction())
             {
-                var tasks = new List<Task>();
-                foreach (var asset in assets)
+                var completed = 0;
+                foreach (var asset in selectedAssets)
                 {
+                    if (sessionViewModel.IsSessionDisposed || sessionViewModel.IsClosing) break;
                     logger.Verbose($"Updating {asset.Url}...");
-                    var task = asset.Sources.UpdateAssetFromSource(logger);
-                    // Continuation might swallow exceptions, careful to keep the original task like this
-                    task.ContinueWith(x => logger.Verbose($"{asset.Url} updated")).Forget();
-                    tasks.Add(task);
+                    // A prior failure must not poison a valid later asset's HasErrors.
+                    var assetLogger = new LoggerResult();
+                    await asset.Sources.UpdateAssetFromSourceWithinOperation(assetLogger);
+                    assetLogger.CopyTo(logger);
+                    if (!assetLogger.HasErrors) completed++;
                 }
-                await Task.WhenAll(tasks);
                 logger.Info("Update completed...");
-                undoRedo.SetName(transaction, $"Update {tasks.Count} asset(s) from their source(s)");
+                undoRedo.SetName(transaction, $"Update {completed} asset(s) from their source(s)");
             }
 
-            await workProgress.NotifyWorkFinished(false, logger.HasErrors);
+            if (!sessionViewModel.IsSessionDisposed)
+                await workProgress.NotifyWorkFinished(false, logger.HasErrors);
+            }
         }
 
         private async Task PullSourceFileChanges()

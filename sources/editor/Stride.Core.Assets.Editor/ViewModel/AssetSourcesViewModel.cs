@@ -82,6 +82,19 @@ namespace Stride.Core.Assets.Editor.ViewModel
                 return;
             }
             using (lease)
+                await UpdateAssetFromSourceWithinOperation(logger);
+        }
+
+        // The tracker owns one lease around a sequential multi-asset batch.
+        // Only that internal path may reuse a reservation; public calls still reject reentry.
+        internal async Task UpdateAssetFromSourceWithinOperation(LoggerResult logger)
+        {
+            Dispatcher.EnsureAccess();
+            if (!asset.Session.IsAssetOperationInProgress || asset.Session.IsSessionDisposed || asset.Session.IsClosing)
+            {
+                logger.Error("Asset source update requires a live reserved session.");
+                return;
+            }
             {
                 try
                 {
