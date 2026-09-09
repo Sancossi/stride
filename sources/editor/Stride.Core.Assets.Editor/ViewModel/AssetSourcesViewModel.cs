@@ -75,8 +75,34 @@ namespace Stride.Core.Assets.Editor.ViewModel
 
         public async Task UpdateAssetFromSource(LoggerResult logger)
         {
-            await asset.UpdateAssetFromSource(logger);
+            Dispatcher.EnsureAccess();
+            if (!asset.Session.TryBeginAssetOperation(out var lease))
+            {
+                logger.Error("Cannot update asset sources while the session is saving, closing, disposed or updating another asset.");
+                return;
+            }
+            using (lease)
+            {
+                try
+                {
+                    await asset.UpdateAssetFromSource(logger);
+                    if (asset.Session.IsSessionDisposed || asset.Session.IsClosing || asset.IsDeleted)
+                    {
+                        logger.Error("Asset source update abandoned because the session or asset was closed.");
+                        return;
+                    }
+                    if (logger.HasErrors) return;
+                    UpdateSourceHashes();
+                }
+                catch (System.Exception error)
+                {
+                    logger.Error("Asset source update failed; source hashes were not accepted.", error);
+                }
+            }
+        }
 
+        private void UpdateSourceHashes()
+        {
             var oldHashes = new Dictionary<UFile, ObjectId>((Dictionary<UFile, ObjectId>)updatedHashes);
             var newHashes = new Dictionary<UFile, ObjectId>();
             foreach (var file in currentSourceFiles)
@@ -113,26 +139,33 @@ namespace Stride.Core.Assets.Editor.ViewModel
                 return;
 
             updatingFromSource = true;
-            var logger = new LoggerResult();
-            var workProgress = new WorkProgressViewModel(ServiceProvider, logger)
+            try
             {
-                Title = "Update assets from source",
-                KeepOpen = KeepOpen.OnWarningsOrErrors,
-                IsIndeterminate = true,
-                IsCancellable = false,
-            };
-            workProgress.RegisterProgressStatus(logger, true);
+                var logger = new LoggerResult();
+                var workProgress = new WorkProgressViewModel(ServiceProvider, logger)
+                {
+                    Title = "Update assets from source",
+                    KeepOpen = KeepOpen.OnWarningsOrErrors,
+                    IsIndeterminate = true,
+                    IsCancellable = false,
+                };
+                workProgress.RegisterProgressStatus(logger, true);
 
-            workProgress.ServiceProvider.Get<IEditorDialogService>().ShowProgressWindow(workProgress, 500);
+                workProgress.ServiceProvider.Get<IEditorDialogService>().ShowProgressWindow(workProgress, 500);
 
-            using (var transaction = asset.UndoRedoService.CreateTransaction())
-            {
-                await UpdateAssetFromSource(logger);
-                asset.UndoRedoService.SetName(transaction, $"Update [{asset.Url}] from its source(s)");
+                using (var transaction = asset.UndoRedoService.CreateTransaction())
+                {
+                    await UpdateAssetFromSource(logger);
+                    asset.UndoRedoService.SetName(transaction, $"Update [{asset.Url}] from its source(s)");
+                }
+
+                if (!asset.Session.IsSessionDisposed)
+                    await workProgress.NotifyWorkFinished(false, logger.HasErrors);
             }
-
-            await workProgress.NotifyWorkFinished(false, logger.HasErrors);
-            updatingFromSource = false;
+            finally
+            {
+                updatingFromSource = false;
+            }
         }
     }
 }

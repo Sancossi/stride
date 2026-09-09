@@ -53,6 +53,7 @@ namespace Stride.Core.Assets.Editor.ViewModel
         private int savingOperations;
         private int closingOperations;
         private bool closeAccepted;
+        private bool assetOperationInProgress;
 
         /// <summary>True for the entire native save, including view-model refresh and the Undo save point. Read on the dispatcher.</summary>
         public bool IsSaving => savingOperations != 0;
@@ -62,6 +63,43 @@ namespace Stride.Core.Assets.Editor.ViewModel
 
         /// <summary>Set before any session services are destroyed. Read on the dispatcher.</summary>
         public bool IsSessionDisposed { get; private set; }
+
+        /// <summary>True while an asynchronous source update owns the live asset graph. Read on the dispatcher.</summary>
+        public bool IsAssetOperationInProgress => assetOperationInProgress;
+
+        /// <summary>Reserves the session against save/close and concurrent source updates. Does not create an Undo transaction.</summary>
+        public bool TryBeginAssetOperation(out IDisposable lease)
+        {
+            Dispatcher.EnsureAccess();
+            lease = null;
+            if (IsSaving || IsClosing || IsSessionDisposed || assetOperationInProgress)
+                return false;
+            assetOperationInProgress = true;
+            lease = new AssetOperationLease(this);
+            try { OnPropertyChanged(nameof(IsAssetOperationInProgress)); }
+            catch
+            {
+                assetOperationInProgress = false;
+                lease = null;
+                throw;
+            }
+            return true;
+        }
+
+        private sealed class AssetOperationLease(SessionViewModel owner) : IDisposable
+        {
+            private SessionViewModel session = owner;
+            public void Dispose()
+            {
+                if (session == null) return;
+                session.Dispatcher.EnsureAccess();
+                var current = session;
+                session = null;
+                current.assetOperationInProgress = false;
+                if (!current.IsSessionDisposed)
+                    current.OnPropertyChanged(nameof(IsAssetOperationInProgress));
+            }
+        }
 
         private ProjectViewModel currentProject;
         private readonly PackageSession session;
@@ -938,6 +976,11 @@ namespace Stride.Core.Assets.Editor.ViewModel
             Dispatcher.EnsureAccess();
             if (IsSessionDisposed || closeAccepted)
                 throw new InvalidOperationException("The session is closed or disposed.");
+            if (IsAssetOperationInProgress)
+            {
+                AssetLog.GetLogger(LogKey.Get("Session")).Warning("Cannot save while an asset source update is running. Wait for it to complete.");
+                return false;
+            }
             savingOperations++;
             try
             {
@@ -1219,6 +1262,11 @@ namespace Stride.Core.Assets.Editor.ViewModel
             Dispatcher.EnsureAccess();
             if (IsSessionDisposed)
                 throw new ObjectDisposedException(nameof(SessionViewModel));
+            if (IsAssetOperationInProgress)
+            {
+                AssetLog.GetLogger(LogKey.Get("Session")).Warning("Cannot close while an asset source update is running. Wait for it to complete.");
+                return false;
+            }
             if (closeAccepted)
                 return true;
             closingOperations++;

@@ -39,6 +39,13 @@ namespace Stride.Core.Assets.Editor.ViewModel
                 try
                 {
                     var newAsset = await Task.Run(() => importer.Import(Asset.MainSource, importParameters).SingleOrDefault(x => x.Asset is TAsset));
+                    // Destroy can bypass the normal Close path. Never resume into its released graph.
+                    Dispatcher.EnsureAccess();
+                    if (Session.IsSessionDisposed || Session.IsClosing || IsDeleted)
+                    {
+                        logger.Error("Asset source update abandoned because the session or asset was closed.");
+                        return;
+                    }
                     if (newAsset != null)
                     {
                         UpdateAssetFromSource((TAsset)newAsset.Asset);
