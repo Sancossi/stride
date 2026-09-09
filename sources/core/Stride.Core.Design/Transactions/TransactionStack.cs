@@ -163,13 +163,13 @@ internal class TransactionStack : ITransactionStack
         {
             if (RollInProgress)
                 throw new TransactionException("Cannot complete a transaction during rollback.");
+            if (transactionsInProgress.Count == 0)
+                throw new TransactionException("There is not transaction in progress in the transaction stack.");
+            if (transaction != transactionsInProgress.Peek())
+                throw new TransactionException("The transaction being completed is not that last created transaction.");
             try
             {
-                if (transactionsInProgress.Count == 0)
-                    throw new TransactionException("There is not transaction in progress in the transaction stack.");
-
-                if (transaction != transactionsInProgress.Pop())
-                    throw new TransactionException("The transaction being completed is not that last created transaction.");
+                transactionsInProgress.Pop();
 
                 // Check if we're completing the last transaction
                 TransactionInProgress = transactionsInProgress.Count > 0;

@@ -107,6 +107,37 @@ public class TestTransactionAbort
         Assert.Empty(stack.RetrieveAllTransactions());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompletingParentCannotRemoveChildWhoseRollbackFailed(bool disposeParent)
+    {
+        var stack = TransactionStackFactory.Create(8);
+        using (stack.CreateTransaction()) stack.PushOperation(new SimpleOperation());
+        var history = stack.RetrieveAllTransactions().Select(x => x.Id).ToArray();
+        var parent = stack.CreateTransaction();
+        var retained = new SimpleOperation();
+        stack.PushOperation(retained);
+        var child = stack.CreateTransaction();
+        stack.PushOperation(new ThrowingRollback());
+        Assert.Throws<InvalidOperationException>(() => stack.AbortTransaction(child));
+        Assert.Throws<TransactionException>(() =>
+        {
+            if (disposeParent) parent.Dispose(); else parent.Complete();
+        });
+        Assert.True(child.HasFailedAbort);
+        Assert.True(stack.TransactionInProgress);
+        Assert.True(retained.IsDone);
+        Assert.Equal(0, retained.RollbackCount);
+        Assert.Equal(history, stack.RetrieveAllTransactions().Select(x => x.Id));
+        // Failed parent completion must leave the poisoned child current.
+        Assert.Throws<TransactionException>(() => stack.CreateTransaction());
+        Assert.Throws<TransactionException>(() => stack.PushOperation(new SimpleOperation()));
+        Assert.Throws<TransactionException>(() => parent.Complete());
+        Assert.Throws<TransactionException>(() => child.Complete());
+        Assert.Equal(history, stack.RetrieveAllTransactions().Select(x => x.Id));
+    }
+
     private sealed class ThrowingRollback : Operation
     {
         protected override void Rollback() => throw new InvalidOperationException("rollback failed");
