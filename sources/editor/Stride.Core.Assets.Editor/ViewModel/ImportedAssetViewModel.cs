@@ -46,6 +46,7 @@ namespace Stride.Core.Assets.Editor.ViewModel
                         logger.Error("Asset source update abandoned because the session or asset was closed.");
                         return;
                     }
+                    if (logger.HasErrors) return;
                     if (newAsset != null)
                     {
                         UpdateAssetFromSource((TAsset)newAsset.Asset);
