@@ -50,6 +50,18 @@ namespace Stride.Core.Assets.Editor.ViewModel
         private readonly Dictionary<PackageViewModel, PackageContainer> packageMap = new Dictionary<PackageViewModel, PackageContainer>();
         private readonly ConcurrentDictionary<AssetId, AssetViewModel> assetIdMap = new ConcurrentDictionary<AssetId, AssetViewModel>();
         private bool sessionStateUpdating;
+        private int savingOperations;
+        private int closingOperations;
+        private bool closeAccepted;
+
+        /// <summary>True for the entire native save, including view-model refresh and the Undo save point. Read on the dispatcher.</summary>
+        public bool IsSaving => savingOperations != 0;
+
+        /// <summary>True while close is pending, and permanently after close is accepted. Cancelled/failed close releases this state.</summary>
+        public bool IsClosing => closingOperations != 0 || closeAccepted;
+
+        /// <summary>Set before any session services are destroyed. Read on the dispatcher.</summary>
+        public bool IsSessionDisposed { get; private set; }
 
         private ProjectViewModel currentProject;
         private readonly PackageSession session;
@@ -504,6 +516,10 @@ namespace Stride.Core.Assets.Editor.ViewModel
         public override void Destroy()
         {
             EnsureNotDestroyed(nameof(SessionViewModel));
+            if (IsSessionDisposed)
+                throw new ObjectDisposedException(nameof(SessionViewModel));
+            IsSessionDisposed = true;
+            OnPropertyChanged(nameof(IsSessionDisposed));
 
             SourceTracker?.Destroy();
             ActionHistory.Destroy();
@@ -920,6 +936,24 @@ namespace Stride.Core.Assets.Editor.ViewModel
         public async Task<bool> SaveSession()
         {
             Dispatcher.EnsureAccess();
+            if (IsSessionDisposed || closeAccepted)
+                throw new InvalidOperationException("The session is closed or disposed.");
+            savingOperations++;
+            try
+            {
+                OnPropertyChanged(nameof(IsSaving));
+                return await SaveSessionCore();
+            }
+            finally
+            {
+                savingOperations--;
+                OnPropertyChanged(nameof(IsSaving));
+            }
+        }
+
+        private async Task<bool> SaveSessionCore()
+        {
+            Dispatcher.EnsureAccess();
 
             bool success = false;
 
@@ -1181,6 +1215,28 @@ namespace Stride.Core.Assets.Editor.ViewModel
         /// Attempts to close the session. If the session has unsaved changes, ask the user wether to save it or not. If the user cancels
         /// </summary>
         public async Task<bool> Close()
+        {
+            Dispatcher.EnsureAccess();
+            if (IsSessionDisposed)
+                throw new ObjectDisposedException(nameof(SessionViewModel));
+            if (closeAccepted)
+                return true;
+            closingOperations++;
+            try
+            {
+                OnPropertyChanged(nameof(IsClosing));
+                bool accepted = await CloseCore();
+                closeAccepted |= accepted;
+                return accepted;
+            }
+            finally
+            {
+                closingOperations--;
+                OnPropertyChanged(nameof(IsClosing));
+            }
+        }
+
+        private async Task<bool> CloseCore()
         {
             // Check if either view model is dirty, or any LocalPackage.Assets is (since some view models such as scripts don't make package dirty)
             if (HasUnsavedAssets())
